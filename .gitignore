@@ -1,21 +1,14 @@
-# Generated build files
 .gradle/
 build/
 out/
 *.class
 *.log
-
-# Local database files
 *.db
 *.sqlite
 *.sqlite3
-
-# Editor / OS files
 .idea/
 .vscode/
 *.iml
 .DS_Store
-
-# Bundled binaries excluded pending review
 lib/
 *.jar

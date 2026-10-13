@@ -4,532 +4,275 @@ import smarticulous.db.Exercise;
 import smarticulous.db.Submission;
 import smarticulous.db.User;
 
+import java.security.MessageDigest;
+import java.security.SecureRandom;
+import java.security.spec.KeySpec;
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.Base64;
+import java.util.Date;
 import java.util.List;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 
-/**
- * The Smarticulous class, implementing a grading system.
- */
+/** A small SQLite-backed academic grading system. */
 public class Smarticulous {
+    private Connection db;
+    private static final int ITERATIONS = 310000;
+    private static final int KEY_BITS = 256;
+    private static final SecureRandom RANDOM = new SecureRandom();
 
-    /**
-     * The connection to the underlying DB.
-     * <p>
-     * null if the db has not yet been opened.
-     */
-    Connection db;
-
-    /**
-     * Open the {@link Smarticulous} SQLite database.
-     * <p>
-     * This should open the database, creating a new one if necessary, and set the {@link #db} field
-     * to the new connection.
-     * <p>
-     * The open method should make sure the database contains the following tables, creating them if necessary:
-     *
-     * <table>
-     *   <caption><em>Table name: <strong>User</strong></em></caption>
-     *   <tr><th>Column</th><th>Type</th></tr>
-     *   <tr><td>UserId</td><td>Integer (Primary Key)</td></tr>
-     *   <tr><td>Username</td><td>Text</td></tr>
-     *   <tr><td>Firstname</td><td>Text</td></tr>
-     *   <tr><td>Lastname</td><td>Text</td></tr>
-     *   <tr><td>Password</td><td>Text</td></tr>
-     * </table>
-     *
-     * <p>
-     * <table>
-     *   <caption><em>Table name: <strong>Exercise</strong></em></caption>
-     *   <tr><th>Column</th><th>Type</th></tr>
-     *   <tr><td>ExerciseId</td><td>Integer (Primary Key)</td></tr>
-     *   <tr><td>Name</td><td>Text</td></tr>
-     *   <tr><td>DueDate</td><td>Integer</td></tr>
-     * </table>
-     *
-     * <p>
-     * <table>
-     *   <caption><em>Table name: <strong>Question</strong></em></caption>
-     *   <tr><th>Column</th><th>Type</th></tr>
-     *   <tr><td>ExerciseId</td><td>Integer</td></tr>
-     *   <tr><td>QuestionId</td><td>Integer</td></tr>
-     *   <tr><td>Name</td><td>Text</td></tr>
-     *   <tr><td>Desc</td><td>Text</td></tr>
-     *   <tr><td>Points</td><td>Integer</td></tr>
-     * </table>
-     * In this table the combination of ExerciseId and QuestionId together comprise the primary key.
-     *
-     * <p>
-     * <table>
-     *   <caption><em>Table name: <strong>Submission</strong></em></caption>
-     *   <tr><th>Column</th><th>Type</th></tr>
-     *   <tr><td>SubmissionId</td><td>Integer (Primary Key)</td></tr>
-     *   <tr><td>UserId</td><td>Integer</td></tr>
-     *   <tr><td>ExerciseId</td><td>Integer</td></tr>
-     *   <tr><td>SubmissionTime</td><td>Integer</td></tr>
-     * </table>
-     *
-     * <p>
-     * <table>
-     *   <caption><em>Table name: <strong>QuestionGrade</strong></em></caption>
-     *   <tr><th>Column</th><th>Type</th></tr>
-     *   <tr><td>SubmissionId</td><td>Integer</td></tr>
-     *   <tr><td>QuestionId</td><td>Integer</td></tr>
-     *   <tr><td>Grade</td><td>Real</td></tr>
-     * </table>
-     * In this table the combination of SubmissionId and QuestionId together comprise the primary key.
-     *
-     * @param dburl The JDBC url of the database to open (will be of the form "jdbc:sqlite:...")
-     * @return the new connection
-     * @throws SQLException
-     */
     public Connection openDB(String dburl) throws SQLException {
-        // TODO: Implement
-        this.db = null;
-        try {
-            this.db = DriverManager.getConnection(dburl);
-            createTables();
-            return this.db;
-        } catch (SQLException e) {
-            throw e;
+        closeDB();
+        db = DriverManager.getConnection(dburl);
+        try (Statement st = db.createStatement()) {
+            st.execute("PRAGMA foreign_keys = ON");
+            st.execute("CREATE TABLE IF NOT EXISTS User (UserId INTEGER PRIMARY KEY, Username TEXT UNIQUE NOT NULL, Firstname TEXT, Lastname TEXT, Password TEXT NOT NULL)");
+            st.execute("CREATE TABLE IF NOT EXISTS Exercise (ExerciseId INTEGER PRIMARY KEY, Name TEXT, DueDate INTEGER)");
+            st.execute("CREATE TABLE IF NOT EXISTS Question (ExerciseId INTEGER NOT NULL, QuestionId INTEGER NOT NULL, Name TEXT, \"Desc\" TEXT, Points INTEGER NOT NULL, PRIMARY KEY (ExerciseId, QuestionId), FOREIGN KEY (ExerciseId) REFERENCES Exercise(ExerciseId))");
+            st.execute("CREATE TABLE IF NOT EXISTS Submission (SubmissionId INTEGER PRIMARY KEY, UserId INTEGER NOT NULL, ExerciseId INTEGER NOT NULL, SubmissionTime INTEGER NOT NULL, FOREIGN KEY (UserId) REFERENCES User(UserId), FOREIGN KEY (ExerciseId) REFERENCES Exercise(ExerciseId))");
+            st.execute("CREATE TABLE IF NOT EXISTS QuestionGrade (SubmissionId INTEGER NOT NULL, QuestionId INTEGER NOT NULL, Grade REAL NOT NULL, PRIMARY KEY (SubmissionId, QuestionId), FOREIGN KEY (SubmissionId) REFERENCES Submission(SubmissionId))");
+        } catch (SQLException ex) {
+            closeDB();
+            throw ex;
         }
+        return db;
     }
 
-    private void createTables() throws SQLException {
-        try (Statement statement = this.db.createStatement()) {
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS User (UserId INTEGER PRIMARY KEY, Username TEXT UNIQUE, Firstname TEXT, Lastname TEXT, Password TEXT)");
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS Exercise (ExerciseId INTEGER PRIMARY KEY, Name TEXT, DueDate INTEGER)");
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS Question (ExerciseId INTEGER, QuestionId INTEGER, Name TEXT, Desc TEXT, Points INTEGER, PRIMARY KEY (ExerciseId, QuestionId))");
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS Submission (SubmissionId INTEGER PRIMARY KEY, UserId INTEGER, ExerciseId INTEGER, SubmissionTime INTEGER)");
-            statement.executeUpdate("CREATE TABLE IF NOT EXISTS QuestionGrade (SubmissionId INTEGER, QuestionId INTEGER, Grade REAL, PRIMARY KEY (QuestionId, SubmissionId))");
-        }
-    }
-
-
-    /**
-     * Close the DB if it is open.
-     *
-     * @throws SQLException
-     */
     public void closeDB() throws SQLException {
         if (db != null) {
-            db.close();
-            db = null;
+            try { db.close(); } finally { db = null; }
         }
     }
 
-    // =========== User Management =============
+    private Connection connection() throws SQLException {
+        if (db == null || db.isClosed()) throw new SQLException("Database is not open");
+        return db;
+    }
 
-    /**
-     * Add a user to the database / modify an existing user.
-     * <p>
-     * Add the user to the database if they don't exist. If a user with user.username does exist,
-     * update their password and firstname/lastname in the database.
-     *
-     * @param user
-     * @param password
-     * @return the userid.
-     * @throws SQLException
-     */
+    private interface Transaction<T> { T run() throws SQLException; }
+    private <T> T transaction(Transaction<T> action) throws SQLException {
+        Connection c = connection();
+        boolean prior = c.getAutoCommit();
+        if (!prior) throw new SQLException("Nested transaction not supported");
+        c.setAutoCommit(false);
+        try {
+            T result = action.run();
+            c.commit();
+            return result;
+        } catch (SQLException | RuntimeException ex) {
+            try { c.rollback(); } catch (SQLException rollback) { ex.addSuppressed(rollback); }
+            throw ex;
+        } finally {
+            c.setAutoCommit(prior);
+        }
+    }
+
+    private static String hashPassword(String password) throws SQLException {
+        if (password == null) throw new SQLException("Password must not be null");
+        byte[] salt = new byte[16];
+        RANDOM.nextBytes(salt);
+        try {
+            KeySpec spec = new PBEKeySpec(password.toCharArray(), salt, ITERATIONS, KEY_BITS);
+            byte[] hash = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+            return "pbkdf2_sha256$" + ITERATIONS + "$" + Base64.getEncoder().encodeToString(salt) + "$" + Base64.getEncoder().encodeToString(hash);
+        } catch (Exception e) { throw new SQLException("Unable to hash password", e); }
+    }
+
+    private static boolean matchesPassword(String provided, String stored) throws SQLException {
+        if (provided == null || stored == null) return false;
+        String[] parts = stored.split("\\$", -1);
+        if (parts.length != 4 || !parts[0].equals("pbkdf2_sha256")) return false;
+        try {
+            int rounds = Integer.parseInt(parts[1]);
+            if (rounds < 100000 || rounds > 1000000) return false;
+            byte[] salt = Base64.getDecoder().decode(parts[2]);
+            byte[] expected = Base64.getDecoder().decode(parts[3]);
+            KeySpec spec = new PBEKeySpec(provided.toCharArray(), salt, rounds, expected.length * 8);
+            byte[] calculated = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256").generateSecret(spec).getEncoded();
+            return MessageDigest.isEqual(calculated, expected);
+        } catch (Exception e) { return false; }
+    }
+
     public int addOrUpdateUser(User user, String password) throws SQLException {
-        // TODO: Implement
-        PreparedStatement insertStatement = null;
-        try {
-            insertStatement = insertOrUpdateUserRecord(user, password);
-            return getUserIdByUsername(user.username);
-        } finally {
-            closeResources(null, insertStatement); // Passing null for ResultSet since not used in insert
-        }
-    }
-
-    private PreparedStatement insertOrUpdateUserRecord(User user, String password) throws SQLException {
-        String insertQuery = "INSERT OR REPLACE INTO User (Username, Firstname, Lastname, Password) VALUES (?,?,?,?)";
-        PreparedStatement insertStatement = db.prepareStatement(insertQuery);
-        setInsertStatementParameters(insertStatement, user, password);
-        insertStatement.executeUpdate();
-        return insertStatement;
-    }
-    private int getUserIdByUsername(String username) throws SQLException {
-        String selectQuery = "SELECT UserId FROM User WHERE Username = ?";
-        try (PreparedStatement selectStatement = db.prepareStatement(selectQuery)) {
-            selectStatement.setString(1, username);
-            try (ResultSet results = selectStatement.executeQuery()) {
-                if (results.next()) {
-                    return results.getInt("UserId");
-                } else {
-                    throw new SQLException("Failed to retrieve UserId for user: " + username);
+        if (user == null || user.username == null || user.username.isEmpty()) throw new SQLException("Invalid user");
+        String hash = hashPassword(password);
+        return transaction(() -> {
+            try (PreparedStatement st = connection().prepareStatement("INSERT INTO User (Username, Firstname, Lastname, Password) VALUES (?, ?, ?, ?) ON CONFLICT(Username) DO UPDATE SET Firstname=excluded.Firstname, Lastname=excluded.Lastname, Password=excluded.Password")) {
+                st.setString(1, user.username);
+                st.setString(2, user.firstname);
+                st.setString(3, user.lastname);
+                st.setString(4, hash);
+                st.executeUpdate();
+            }
+            try (PreparedStatement st = connection().prepareStatement("SELECT UserId FROM User WHERE Username=?")) {
+                st.setString(1, user.username);
+                try (ResultSet rs = st.executeQuery()) {
+                    if (!rs.next()) throw new SQLException("Missing user after insert");
+                    return rs.getInt(1);
                 }
             }
-        }
+        });
     }
 
-    private void closeResources(ResultSet results, PreparedStatement statement) {
-        try {
-            if (results != null) {
-                results.close();
-            }
-            if (statement != null) {
-                statement.close();
-            }
-        } catch (SQLException e) {
-        }
-    }
-
-    private void setInsertStatementParameters(PreparedStatement statement, User user, String password) throws SQLException {
-        statement.setString(1, user.username);
-        statement.setString(2, user.firstname);
-        statement.setString(3, user.lastname);
-        statement.setString(4, password);
-    }
-
-
-
-    /**
-     * Verify a user's login credentials.
-     *
-     * @param username
-     * @param password
-     * @return true if the user exists in the database and the password matches; false otherwise.
-     * @throws SQLException
-     * <p>
-     * Note: this is totally insecure. For real-life password checking, it's important to store only
-     * a password hash
-     * @see <a href="https://crackstation.net/hashing-security.htm">How to Hash Passwords Properly</a>
-     */
     public boolean verifyLogin(String username, String password) throws SQLException {
-        // TODO: Implement
-        PreparedStatement statement = null;
-        ResultSet resultSet = null;
-
-        try {
-            statement = this.db.prepareStatement("SELECT Password FROM User WHERE Username = ?");
-            statement.setString(1, username);
-            resultSet = statement.executeQuery();
-
-            if (resultSet.next()) {
-                String storedPassword = resultSet.getString("Password");
-                return storedPassword.equals(password);
-            } else {
-                // No user found with the given username
-                return false;
-            }
-        } finally {
-            if (resultSet != null) {
-                resultSet.close();
-            }
-            if (statement != null) {
-                statement.close();
+        try (PreparedStatement st = connection().prepareStatement("SELECT Password FROM User WHERE Username=?")) {
+            st.setString(1, username);
+            try (ResultSet rs = st.executeQuery()) {
+                return rs.next() && matchesPassword(password, rs.getString(1));
             }
         }
     }
 
-    
-    
-
-    // =========== Exercise Management =============
-
-    /**
-     * Add an exercise to the database.
-     *
-     * @param exercise
-     * @return the new exercise id, or -1 if an exercise with this id already existed in the database.
-     * @throws SQLException
-     */
     public int addExercise(Exercise exercise) throws SQLException {
-        // TODO: Implement
-        PreparedStatement statement = null;
-
-        try {
-            insertExercise(exercise, this.db);
-            for (int i = 0; i < exercise.questions.size(); i++) {
-                statement = this.db.prepareStatement("INSERT INTO Question (ExerciseId, Name, Desc, Points) VALUES (?, ?, ?, ?)");
-                statement.setInt(1, exercise.id);
-                statement.setString(2, exercise.questions.get(i).name);
-                statement.setString(3, exercise.questions.get(i).desc);
-                statement.setInt(4, exercise.questions.get(i).points);
-                statement.executeUpdate();
-            }
-            return getExerciseId(exercise, this.db);
-        } catch (SQLException e) {
-            return -1;
-        } finally {
-            if (statement != null) {
-                statement.close();
-            }
+        if (exercise == null || exercise.dueDate == null || exercise.questions == null) throw new SQLException("Invalid exercise");
+        try (PreparedStatement exists = connection().prepareStatement("SELECT 1 FROM Exercise WHERE ExerciseId=?")) {
+            exists.setInt(1, exercise.id);
+            try (ResultSet rs = exists.executeQuery()) { if (rs.next()) return -1; }
         }
-    }
-    
-    
-    private void insertExercise(Exercise exercise, Connection connection) throws SQLException {
-        String insertExerciseQuery = "INSERT INTO Exercise (ExerciseID, Name, DueDate) VALUES (?, ?, ?)";
-        try (PreparedStatement statement = connection.prepareStatement(insertExerciseQuery)) {
-            statement.setInt(1, exercise.id);
-            statement.setString(2, exercise.name);
-            statement.setLong(3, exercise.dueDate.getTime());
-            statement.executeUpdate();
-        }
-    }
-    
-    private int getExerciseId(Exercise exercise, Connection connection) throws SQLException {
-        String selectExerciseIdQuery = "SELECT ExerciseId FROM Exercise WHERE ExerciseId = ?";
-        try (PreparedStatement statement = connection.prepareStatement(selectExerciseIdQuery)) {
-            statement.setInt(1, exercise.id);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (resultSet.next()) {
-                    return resultSet.getInt("ExerciseId");
-                } else {
-                    throw new SQLException();
+        return transaction(() -> {
+            try (PreparedStatement st = connection().prepareStatement("INSERT INTO Exercise (ExerciseId, Name, DueDate) VALUES (?, ?, ?)")) {
+                st.setInt(1, exercise.id);
+                st.setString(2, exercise.name);
+                st.setLong(3, exercise.dueDate.getTime());
+                st.executeUpdate();
+            }
+            try (PreparedStatement st = connection().prepareStatement("INSERT INTO Question (ExerciseId, QuestionId, Name, \"Desc\", Points) VALUES (?, ?, ?, ?, ?)")) {
+                for (int i = 0; i < exercise.questions.size(); i++) {
+                    Exercise.Question q = exercise.questions.get(i);
+                    if (q.points <= 0) throw new SQLException("Question points must be positive");
+                    st.setInt(1, exercise.id);
+                    st.setInt(2, i + 1);
+                    st.setString(3, q.name);
+                    st.setString(4, q.desc);
+                    st.setInt(5, q.points);
+                    st.executeUpdate();
                 }
             }
-        }
-    }    
-    
+            return exercise.id;
+        });
+    }
 
-
-    /**
-     * Return a list of all the exercises in the database.
-     * <p>
-     * The list should be sorted by exercise id.
-     *
-     * @return list of all exercises.
-     * @throws SQLException
-     */
     public List<Exercise> loadExercises() throws SQLException {
-        PreparedStatement exerciseStatement = null;
-        try {
-            exerciseStatement = db.prepareStatement("SELECT ExerciseId, Name, DueDate FROM Exercise ORDER BY ExerciseId");
-            ResultSet exerciseResultSet = exerciseStatement.executeQuery();
-    
-            List<Exercise> exercisesList = new ArrayList<>();
-    
-            while (exerciseResultSet.next()) {
-                int exerciseId = exerciseResultSet.getInt("ExerciseId");
-                String exerciseName = exerciseResultSet.getString("Name");
-                Date dueDate = new Date(exerciseResultSet.getLong("DueDate"));
-    
-                Exercise exercise = new Exercise(exerciseId, exerciseName, dueDate);
-    
-                PreparedStatement questionStatement = db.prepareStatement("SELECT Name, Desc, Points FROM Question WHERE ExerciseId = ?");
-                questionStatement.setInt(1, exerciseId);
-                ResultSet questionResultSet = questionStatement.executeQuery();
-    
-                while (questionResultSet.next()) {
-                    String questionName = questionResultSet.getString("Name");
-                    String questionDesc = questionResultSet.getString("Desc");
-                    int points = questionResultSet.getInt("Points");
-                    exercise.addQuestion(questionName, questionDesc, points);
+        List<Exercise> exercises = new ArrayList<>();
+        try (PreparedStatement st = connection().prepareStatement("SELECT ExerciseId, Name, DueDate FROM Exercise ORDER BY ExerciseId");
+             ResultSet rs = st.executeQuery()) {
+            try (PreparedStatement qs = connection().prepareStatement("SELECT Name, \"Desc\", Points FROM Question WHERE ExerciseId=? ORDER BY QuestionId")) {
+                while (rs.next()) {
+                    Exercise ex = new Exercise(rs.getInt(1), rs.getString(2), new Date(rs.getLong(3)));
+                    qs.setInt(1, ex.id);
+                    try (ResultSet qr = qs.executeQuery()) {
+                        while (qr.next()) ex.addQuestion(qr.getString(1), qr.getString(2), qr.getInt(3));
+                    }
+                    exercises.add(ex);
                 }
-    
-                exercisesList.add(exercise);
-            }
-    
-            return exercisesList;
-        } catch (SQLException ex) {
-            throw new SQLException("Error loading exercises from the database.", ex);
-        } finally {
-            if (exerciseStatement != null) {
-                exerciseStatement.close();
             }
         }
+        return exercises;
     }
-    
-    
-    // ========== Submission Storage ===============
 
-    /**
-     * Store a submission in the database.
-     * The id field of the submission will be ignored if it is -1.
-     * <p>
-     * Return -1 if the corresponding user doesn't exist in the database.
-     *
-     * @param submission
-     * @return the submission id.
-     * @throws SQLException
-     */
     public int storeSubmission(Submission submission) throws SQLException {
-        PreparedStatement st = null;
-    
-        try {
-            st = this.db.prepareStatement("INSERT INTO Submission (SubmissionId, UserId, ExerciseId, SubmissionTime) VALUES (?, ?, ?, ?)");
-            st.setInt(1, submission.id);
-    
-            PreparedStatement userSt = this.db.prepareStatement("SELECT UserId FROM User WHERE Username = ?");
-            userSt.setString(1, submission.user.username);
-    
-            ResultSet userResultSet = userSt.executeQuery();
-            if (!userResultSet.next()) {
-                throw new SQLException("User not found for username: " + submission.user.username);
+        if (submission == null || submission.user == null || submission.exercise == null || submission.submissionTime == null || submission.questionGrades == null) throw new SQLException("Invalid submission");
+        Exercise ex = submission.exercise;
+        if (submission.questionGrades.length != ex.questions.size()) throw new SQLException("Grade/question count mismatch");
+        for (int i = 0; i < ex.questions.size(); i++) {
+            float grade = submission.questionGrades[i];
+            if (!Float.isFinite(grade) || grade < 0 || grade > ex.questions.get(i).points) throw new SQLException("Invalid grade");
+        }
+        try (PreparedStatement usr = connection().prepareStatement("SELECT UserId FROM User WHERE Username=?")) {
+            usr.setString(1, submission.user.username);
+            try (ResultSet users = usr.executeQuery()) { if (!users.next()) return -1; }
+        }
+        return transaction(() -> {
+            int uid;
+            try (PreparedStatement usr = connection().prepareStatement("SELECT UserId FROM User WHERE Username=?")) {
+                usr.setString(1, submission.user.username);
+                try (ResultSet rs = usr.executeQuery()) {
+                    if (!rs.next()) throw new SQLException("User no longer exists");
+                    uid = rs.getInt(1);
+                }
             }
-    
-            int userId = userResultSet.getInt("UserId");
-            st.setInt(2, userId);
-    
-            int exerciseId = addExercise(submission.exercise);
-            if (exerciseId == -1) {
-                exerciseId = submission.exercise.id;
+            try (PreparedStatement exercise = connection().prepareStatement("SELECT 1 FROM Exercise WHERE ExerciseId=?")) {
+                exercise.setInt(1, ex.id);
+                try (ResultSet rs = exercise.executeQuery()) {
+                    if (!rs.next()) throw new SQLException("Exercise must be created before submission");
+                }
             }
-            st.setInt(3, exerciseId);
-    
-            st.setLong(4, submission.submissionTime.getTime());
-    
-            st.executeUpdate();
-    
-            insertQuestionGrades(submission);
-    
-            return submission.id;
-        } catch (SQLException e) {
-            return -1;
-        } finally {
-            if (st != null) {
-                st.close();
+            int id;
+            String sql = submission.id == -1
+                    ? "INSERT INTO Submission (UserId, ExerciseId, SubmissionTime) VALUES (?, ?, ?)"
+                    : "INSERT INTO Submission (UserId, ExerciseId, SubmissionTime, SubmissionId) VALUES (?, ?, ?, ?)";
+            try (PreparedStatement st = connection().prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+                st.setInt(1, uid);
+                st.setInt(2, ex.id);
+                st.setLong(3, submission.submissionTime.getTime());
+                if (submission.id != -1) st.setInt(4, submission.id);
+                st.executeUpdate();
+                try (ResultSet keys = st.getGeneratedKeys()) {
+                    if (keys.next()) id = keys.getInt(1);
+                    else if (submission.id != -1) id = submission.id;
+                    else throw new SQLException("Missing generated submission ID");
+                }
+            }
+            try (PreparedStatement st = connection().prepareStatement("INSERT INTO QuestionGrade (SubmissionId, QuestionId, Grade) VALUES (?, ?, ?)")) {
+                for (int i = 0; i < submission.questionGrades.length; i++) {
+                    st.setInt(1, id);
+                    st.setInt(2, i + 1);
+                    st.setFloat(3, submission.questionGrades[i]);
+                    st.executeUpdate();
+                }
+            }
+            return id;
+        });
+    }
+
+    private PreparedStatement getLastSubmissionGradesStatement() throws SQLException {
+        return submissionQuery("ORDER BY s.SubmissionTime DESC, s.SubmissionId DESC");
+    }
+
+    private PreparedStatement getBestSubmissionGradesStatement() throws SQLException {
+        return submissionQuery("ORDER BY (SELECT COALESCE(SUM(qg2.Grade),0) FROM QuestionGrade qg2 WHERE qg2.SubmissionId=s.SubmissionId) DESC, s.SubmissionTime DESC, s.SubmissionId DESC");
+    }
+
+    private PreparedStatement submissionQuery(String order) throws SQLException {
+        return connection().prepareStatement(
+            "SELECT s.SubmissionId, q.QuestionId, qg.Grade, s.SubmissionTime " +
+            "FROM Submission s JOIN User u ON s.UserId=u.UserId " +
+            "JOIN Question q ON q.ExerciseId=s.ExerciseId " +
+            "JOIN QuestionGrade qg ON qg.SubmissionId=s.SubmissionId AND qg.QuestionId=q.QuestionId " +
+            "WHERE u.Username=? AND s.ExerciseId=? " +
+            "AND s.SubmissionId=(SELECT s2.SubmissionId FROM Submission s2 " +
+            "WHERE s2.UserId=s.UserId AND s2.ExerciseId=s.ExerciseId " + order.replace("s.","s2.").replace("qg2.","qg2.") + " LIMIT 1) " +
+            "ORDER BY q.QuestionId LIMIT ?");
+    }
+
+    private Submission getSubmission(User user, Exercise exercise, PreparedStatement st) throws SQLException {
+        try (PreparedStatement stmt = st) {
+            stmt.setString(1, user.username);
+            stmt.setInt(2, exercise.id);
+            stmt.setInt(3, exercise.questions.size());
+            try (ResultSet rs = stmt.executeQuery()) {
+                if (!rs.next()) return null;
+                int id = rs.getInt("SubmissionId");
+                Date timestamp = new Date(rs.getLong("SubmissionTime"));
+                float[] grades = new float[exercise.questions.size()];
+                int seen = 0;
+                do {
+                    int qid = rs.getInt("QuestionId");
+                    if (qid < 1 || qid > grades.length) throw new SQLException("Unexpected QuestionId");
+                    grades[qid - 1] = rs.getFloat("Grade");
+                    seen++;
+                } while (rs.next());
+                if (seen != grades.length) throw new SQLException("Incomplete grades for submission " + id);
+                return new Submission(id, user, exercise, timestamp, grades);
             }
         }
     }
-    
-    public void insertQuestionGrades(Submission submission) throws SQLException {
-        for (int i = 0; i < submission.exercise.questions.size(); i++) {
-            PreparedStatement st = this.db.prepareStatement("INSERT INTO QuestionGrade (SubmissionId, QuestionId, Grade) VALUES (?, ?, ?)");
-            st.setInt(1, submission.id);
-            st.setString(2, submission.exercise.questions.get(i).name);
 
-    
-            float grade = submission.questionGrades[i] / submission.exercise.questions.get(i).points;
-            st.setFloat(3, grade);
-    
-            st.executeUpdate();
-            st.close();
-        }
-    }
-    
-    
-    
-    
-    
-
-
-    // ============= Submission Query ===============
-
-
-    /**
-     * Return a prepared SQL statement that, when executed, will
-     * return one row for every question of the latest submission for the given exercise by the given user.
-     * <p>
-     * The rows should be sorted by QuestionId, and each row should contain:
-     * - A column named "SubmissionId" with the submission id.
-     * - A column named "QuestionId" with the question id,
-     * - A column named "Grade" with the grade for that question.
-     * - A column named "SubmissionTime" with the time of submission.
-     * <p>
-     * Parameter 1 of the prepared statement will be set to the User's username, Parameter 2 to the Exercise Id, and
-     * Parameter 3 to the number of questions in the given exercise.
-     * <p>
-     * This will be used by {@link #getLastSubmission(User, Exercise)}
-     *
-     * @return
-     */
-    PreparedStatement getLastSubmissionGradesStatement() throws SQLException {
-        try {
-            String query = "SELECT Submission.SubmissionId, Question.QuestionId, QuestionGrade.Grade, Submission.SubmissionTime " +
-                           "FROM User " +
-                           "JOIN Submission ON User.UserId = Submission.UserId " +
-                           "JOIN Question ON Submission.ExerciseId = Question.ExerciseId " +
-                           "JOIN QuestionGrade ON Question.QuestionId = QuestionGrade.QuestionId " +
-                           "AND Submission.SubmissionId = QuestionGrade.SubmissionId " +
-                           "WHERE User.Username = ? AND Submission.ExerciseId = ? " +
-                           "GROUP BY QuestionGrade.QuestionId " +
-                           "HAVING MAX(Submission.SubmissionTime) " +
-                           "ORDER BY Question.QuestionId " +
-                           "LIMIT ?;";
-            return db.prepareStatement(query);
-        } catch (SQLException ex) {
-            throw new SQLException("Error preparing statement for last submission grades", ex);
-        }
-    }
-    
-
-    /**
-     * Return a prepared SQL statement that, when executed, will
-     * return one row for every question of the <i>best</i> submission for the given exercise by the given user.
-     * The best submission is the one whose point total is maximal.
-     * <p>
-     * The rows should be sorted by QuestionId, and each row should contain:
-     * - A column named "SubmissionId" with the submission id.
-     * - A column named "QuestionId" with the question id,
-     * - A column named "Grade" with the grade for that question.
-     * - A column named "SubmissionTime" with the time of submission.
-     * <p>
-     * Parameter 1 of the prepared statement will be set to the User's username, Parameter 2 to the Exercise Id, and
-     * Parameter 3 to the number of questions in the given exercise.
-     * <p>
-     * This will be used by {@link #getBestSubmission(User, Exercise)}
-     *
-     */
-    PreparedStatement getBestSubmissionGradesStatement() throws SQLException {
-        // TODO: Implement
-        return null;
-    }
-
-    /**
-     * Return a submission for the given exercise by the given user that satisfies
-     * some condition (as defined by an SQL prepared statement).
-     * <p>
-     * The prepared statement should accept the user name as parameter 1, the exercise id as parameter 2 and a limit on the
-     * number of rows returned as parameter 3, and return a row for each question corresponding to the submission, sorted by questionId.
-     * <p>
-     * Return null if the user has not submitted the exercise (or is not in the database).
-     *
-     * @param user
-     * @param exercise
-     * @param stmt
-     * @return
-     * @throws SQLException
-     */
-    Submission getSubmission(User user, Exercise exercise, PreparedStatement stmt) throws SQLException {
-        stmt.setString(1, user.username);
-        stmt.setInt(2, exercise.id);
-        stmt.setInt(3, exercise.questions.size());
-
-        ResultSet res = stmt.executeQuery();
-
-        boolean hasNext = res.next();
-        if (!hasNext)
-            return null;
-
-        int sid = res.getInt("SubmissionId");
-        Date submissionTime = new Date(res.getLong("SubmissionTime"));
-
-        float[] grades = new float[exercise.questions.size()];
-
-        for (int i = 0; hasNext; ++i, hasNext = res.next()) {
-            grades[i] = res.getFloat("Grade");
-        }
-
-        return new Submission(sid, user, exercise, submissionTime, (float[]) grades);
-    }
-
-    /**
-     * Return the latest submission for the given exercise by the given user.
-     * <p>
-     * Return null if the user has not submitted the exercise (or is not in the database).
-     *
-     * @param user
-     * @param exercise
-     * @return
-     * @throws SQLException
-     */
     public Submission getLastSubmission(User user, Exercise exercise) throws SQLException {
         return getSubmission(user, exercise, getLastSubmissionGradesStatement());
     }
 
-
-    /**
-     * Return the submission with the highest total grade
-     *
-     * @param user the user for which we retrieve the best submission
-     * @param exercise the exercise for which we retrieve the best submission
-     * @return
-     * @throws SQLException
-     */
     public Submission getBestSubmission(User user, Exercise exercise) throws SQLException {
         return getSubmission(user, exercise, getBestSubmissionGradesStatement());
     }
