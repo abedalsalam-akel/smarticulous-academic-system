@@ -1,0 +1,35 @@
+plugins {
+  id 'java'
+}
+
+group 'il.ac.idc.ap'
+version '1.0-SNAPSHOT'
+
+sourceCompatibility = 1.8
+
+test {
+    reports {
+        junitXml.required = true
+        html.required = true
+    }
+}
+
+// In this section you declare where to find the dependencies of your project
+repositories {
+    flatDir {
+        dirs 'lib'
+    }
+
+    // Use 'mavenCentral' for resolving your dependencies.    
+    mavenCentral()
+}
+
+// In this section you declare the dependencies for your production and test code
+dependencies {
+    implementation group: 'org.xerial', name: 'sqlite-jdbc', version: '3.36.0.3'
+    implementation group: 'org.slf4j', name: 'slf4j-simple', version: '2.0.3'
+
+    testImplementation 'junit:junit:4.13'
+    testImplementation fileTree(include: ['*.jar'], dir: 'lib')
+}
+
