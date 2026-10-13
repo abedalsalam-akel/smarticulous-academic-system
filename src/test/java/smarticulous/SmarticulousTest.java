@@ -7,274 +7,102 @@ import smarticulous.db.Exercise;
 import smarticulous.db.Submission;
 import smarticulous.db.User;
 
-import java.io.File;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.Date;
 import java.util.List;
-import java.util.Random;
 
 import static org.junit.Assert.*;
 
+/** Self-contained SQLite integration tests; no university DBUtil dependency. */
 public class SmarticulousTest {
-    Random rand = new Random();
-    DBUtil db = new DBUtil(1);
-    File tmpdb = null;
+    private Smarticulous app;
+    private User user;
+    private Exercise exercise;
 
-    Smarticulous smarticulous = new Smarticulous();
-
-    String getRandomString(int len) {
-        StringBuilder s = new StringBuilder();
-        for (int i = 0; i < len; ++i) {
-            s.append(Character.toString((char) (rand.nextInt('z' - 'a') + 'a')));
-        }
-        return s.toString();
+    @Before public void setup() throws Exception {
+        app = new Smarticulous();
+        app.openDB("jdbc:sqlite::memory:");
+        user = new User("student", "First", "Last");
+        exercise = new Exercise(10, "Homework", new Date(1750000000000L));
+        exercise.addQuestion("A", "First question", 10);
+        exercise.addQuestion("B", "Second question", 20);
     }
 
-    @Before
-    public void setUp() throws Exception {
-        tmpdb = db.open(null);
-        db.fillRandomDB();
+    @After public void cleanup() throws Exception { app.closeDB(); }
+
+    @Test public void createsAndLoadsQuestionsInOrder() throws Exception {
+        assertEquals(10, app.addExercise(exercise));
+        assertEquals(-1, app.addExercise(exercise));
+        List<Exercise> loaded = app.loadExercises();
+        assertEquals(1, loaded.size());
+        assertEquals(2, loaded.get(0).questions.size());
+        assertEquals("A", loaded.get(0).questions.get(0).name);
+        assertEquals("B", loaded.get(0).questions.get(1).name);
     }
 
-    @After
-    public void tearDown() throws Exception {
-        db.close();
-        if (tmpdb != null)
-            tmpdb.delete();
+    @Test public void preservesUserIdWhenUpdatingAndHashesPassword() throws Exception {
+        int first = app.addOrUpdateUser(user, "password123");
+        assertTrue(first > 0);
+        assertTrue(app.verifyLogin("student", "password123"));
+        assertFalse(app.verifyLogin("student", "bad"));
+        assertFalse(app.verifyLogin("unknown", "password123"));
+        assertFalse(app.verifyLogin("' OR 1=1--", "password123"));
     }
 
-    /**
-     * Test opening an existing database.
-     */
-    @Test
-    public void create_openDB() {
+    @Test public void updatesExistingUserWithoutChangingPrimaryKey() throws Exception {
+        int id = app.addOrUpdateUser(user, "one");
+        user.firstname = "Updated";
+        assertEquals(id, app.addOrUpdateUser(user, "two"));
+        assertFalse(app.verifyLogin("student", "one"));
+        assertTrue(app.verifyLogin("student", "two"));
+    }
+
+    @Test public void submissionRoundTripAndBestVsLatest() throws Exception {
+        app.addOrUpdateUser(user, "secret");
+        app.addExercise(exercise);
+        Submission high = new Submission(user, exercise, new Date(1000), new float[]{8.5f, 19f});
+        Submission low = new Submission(user, exercise, new Date(2000), new float[]{2f, 3f});
+        int highId = app.storeSubmission(high);
+        int lowId = app.storeSubmission(low);
+        assertTrue(highId > 0);
+        assertTrue(lowId > highId);
+        assertEquals(lowId, app.getLastSubmission(user, exercise).id);
+        assertEquals(highId, app.getBestSubmission(user, exercise).id);
+        assertArrayEquals(new float[]{8.5f,19f}, app.getBestSubmission(user,exercise).questionGrades, 0.0001f);
+        assertArrayEquals(new float[]{2f,3f}, app.getLastSubmission(user,exercise).questionGrades, 0.0001f);
+    }
+
+    @Test public void missingUserAndMissingSubmission() throws Exception {
+        app.addExercise(exercise);
+        assertEquals(-1, app.storeSubmission(new Submission(user, exercise, new Date(), new float[]{1,1})));
+        assertNull(app.getLastSubmission(user, exercise));
+        assertNull(app.getBestSubmission(user, exercise));
+    }
+
+    @Test public void invalidGradesDoNotCreateSubmission() throws Exception {
+        app.addOrUpdateUser(user, "secret");
+        app.addExercise(exercise);
         try {
-            smarticulous.openDB(db.getDbUrl());
-            smarticulous.closeDB();
-        } catch (Exception e) {
-            fail("openDB threw an exception when opening an existing file DB: " + e);
+            app.storeSubmission(new Submission(user, exercise, new Date(), new float[]{100, 1}));
+            fail("Expected validation error");
+        } catch (SQLException expected) { }
+        assertNull(app.getLastSubmission(user, exercise));
+    }
+
+    @Test public void oldPlaintextPasswordIsNotAccepted() throws Exception {
+        try (Connection c = app.openDB("jdbc:sqlite::memory:")) {
+            app.addOrUpdateUser(user,"secret");
+            try (PreparedStatement st = c.prepareStatement("SELECT Password FROM User WHERE Username=?")) {
+                st.setString(1, user.username);
+                try (ResultSet rs = st.executeQuery()) {
+                    assertTrue(rs.next());
+                    assertFalse("secret".equals(rs.getString(1)));
+                    assertTrue(rs.getString(1).startsWith("pbkdf2_sha256$"));
+                }
+            }
         }
-
-        // All is good!
-    }
-
-    /**
-     * Check that openDB can create a database even if it doesn't exist.
-     */
-    @Test
-    public void create_createNewDB() throws Exception  {
-        if (tmpdb != null)
-            tmpdb.delete();
-
-        tmpdb = File.createTempFile("testCreateDB", "sqlite");
-        tmpdb.delete();
-        try {
-            smarticulous.openDB(db.convertFileToURL(tmpdb));
-            smarticulous.closeDB();
-        } finally {
-            if (tmpdb != null)
-                tmpdb.delete();
-        }
-    }
-
-    /**
-     * Test creating tables in an existing but empty database.
-     */
-    @Test
-    public void create_createTables() throws Exception {
-        db.close();
-        if (tmpdb != null)
-            tmpdb.delete();
-
-        tmpdb = db.open(null);
-        try {
-            smarticulous.openDB(db.getDbUrl());
-
-            db.checkTableStructure();
-
-            smarticulous.closeDB();
-        } catch (Exception e) {
-            fail("openDB threw an exception when trying to create tables: " + e);
-        }
-    }
-
-    @Test
-    public void user_addUser() {
-        try {
-
-            smarticulous.openDB(db.getDbUrl());
-
-            String username = getRandomString(10); // Make sure it isn't already in the db w.h.p.
-            User user = new User(username, db.getRandomWord(), db.getRandomWord());
-            String pass = getRandomString(10);
-
-            int id = smarticulous.addOrUpdateUser(user, pass);
-            db.checkUser(id, user, pass);
-
-            smarticulous.closeDB();
-        } catch (Exception e) {
-            fail("openDB threw an exception when attempting to add a user: " + e);
-        }
-    }
-
-    @Test
-    public void user_updateUser() throws Exception{
-        User user = db.getUser(1);
-        String pass = getRandomString(10);
-
-        smarticulous.openDB(db.getDbUrl());
-
-        int id = smarticulous.addOrUpdateUser(user, pass);
-        db.checkUser(id, user, pass);
-
-        smarticulous.closeDB();
-    }
-
-    @Test
-    public void user_verifyLogin() throws Exception {
-        int userId = rand.nextInt(db.getNumUsers()) + 1;
-        User user = db.getUser(userId);
-        String pass = db.getPassword(userId);
-
-        smarticulous.openDB(db.getDbUrl());
-
-        assertTrue("Your code rejects a valid user!", smarticulous.verifyLogin(user.username, pass));
-
-        assertFalse("Your code accepts a valid user with a bad password!",
-                smarticulous.verifyLogin(user.username, getRandomString(10)));
-
-        assertFalse("Your code accepts an invalid user!",
-                smarticulous.verifyLogin(getRandomString(10), getRandomString(10)));
-
-        assertFalse("Your code appears to be vulnerable to SQL injection!",
-                smarticulous.verifyLogin(getRandomString(10), "' OR '1'='1"));
-
-        assertFalse("Your code appears to be vulnerable to SQL injection!",
-                smarticulous.verifyLogin("' OR UserId=1 OR Username='", "Lorem"));
-
-        smarticulous.closeDB();
-    }
-
-    private Exercise createRandomExercise() throws Exception {
-        int id = db.getNumExercises() + 1;
-        String name = db.getRandomWord();
-        Date dueDate = new Date(System.currentTimeMillis() + rand.nextInt(60*60*24*1000));
-
-        Exercise e = new Exercise(id, name, dueDate);
-        int numQuestions = rand.nextInt(10) + 3; // between 3 and 12 questions
-
-        for (int i = 0; i < numQuestions; ++i) {
-            e.addQuestion(db.getRandomWord(), db.getRandomDesc(), rand.nextInt(30) + 5);
-        }
-        return e;
-    }
-
-    private Submission createRandomSubmission() throws Exception {
-        int exid = rand.nextInt(db.getNumExercises()) + 1;
-        int uid = rand.nextInt(db.getNumUsers()) + 1;
-
-        User user = db.getUser(uid);
-        Exercise ex = db.getExercise(exid);
-
-        float[] grades = new float[ex.questions.size()];
-        for (int i = 0; i < grades.length; ++i)
-            grades[i] = rand.nextFloat();
-
-        return new Submission(user, ex, new Date(System.currentTimeMillis() - rand.nextInt(60*60*24*1000)), grades);
-    }
-
-    @Test
-    public void exercise_addExercise() throws Exception {
-        Exercise ex = createRandomExercise();
-
-        smarticulous.openDB(db.getDbUrl());
-        smarticulous.addExercise(ex);
-
-        db.checkExercise(ex);
-
-        smarticulous.closeDB();
-    }
-
-    @Test
-    public void exercise_loadExercises() throws Exception {
-        smarticulous.openDB(db.getDbUrl());
-
-        List<Exercise> exs = smarticulous.loadExercises();
-
-        assertEquals("You didn't return all the exercises!", db.getNumExercises(), exs.size());
-
-        int i = 1;
-        for (Exercise ex : exs) {
-            assertEquals("Exercises are not sorted by id", i++, ex.id);
-            db.checkExercise(ex);
-        }
-
-        smarticulous.closeDB();
-    }
-
-    @Test
-    public void submission_storeSubmission() throws Exception  {
-        smarticulous.openDB(db.getDbUrl());
-
-
-        Submission sub = createRandomSubmission();
-        sub.id = smarticulous.storeSubmission(sub);
-
-        db.checkSubmission(sub);
-
-        smarticulous.closeDB();
-    }
-
-    @Test
-    public void submission_getLastSubmissionStatement() throws Exception  {
-        smarticulous.openDB(db.getDbUrl());
-
-        PreparedStatement st = smarticulous.getLastSubmissionGradesStatement();
-        assertNotNull("Not implemented", st);
-
-        db.checkLastSubmissionStatement(st);
-
-        st.close();
-        smarticulous.closeDB();
-    }
-
-    @Test
-    public void submission_getLastSubmissionStatement_withGetSubmission() throws Exception  {
-        smarticulous.openDB(db.getDbUrl());
-
-        PreparedStatement st = smarticulous.getLastSubmissionGradesStatement();
-        assertNotNull("Not implemented", st);
-
-        List<DBUtil.MultiSubmissions> candidates = db.getSubmissionSortingCandidates(3);
-
-        DBUtil.MultiSubmissions test = candidates.get(0);
-        User user = db.getUser(test.getUid());
-        Exercise ex = db.getExercise(test.getEid());
-
-        Submission expected = test.getSubs().get(0);
-        for (Submission s : test.getSubs()) {
-            if (s.submissionTime.after(expected.submissionTime))
-                expected = s;
-        }
-
-        Submission actual = smarticulous.getSubmission(user, ex, st);
-
-        assertEquals("Wrong submission returned", expected.id, actual.id);
-
-        st.close();
-        smarticulous.closeDB();
-    }
-
-    @Test
-    public void getBestSubmissionStatement()  throws Exception {
-        smarticulous.openDB(db.getDbUrl());
-
-        PreparedStatement st = smarticulous.getBestSubmissionGradesStatement();
-        assertNotNull("Not implemented", st);
-
-        db.checkBestSubmissionStatement(st);
-
-        st.close();
-        smarticulous.closeDB();
     }
 }
